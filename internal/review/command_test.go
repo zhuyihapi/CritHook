@@ -218,6 +218,10 @@ func TestAgentConfigValidate(t *testing.T) {
 		{name: "valid without default", cfg: AgentConfig{Available: []string{"pi"}}},
 		{name: "no agents", cfg: AgentConfig{}, wantErr: true},
 		{name: "empty agent name", cfg: AgentConfig{Available: []string{"pi", ""}}, wantErr: true},
+		{name: "agent name with space", cfg: AgentConfig{Available: []string{"pi cli"}}, wantErr: true},
+		{name: "agent name with tab", cfg: AgentConfig{Available: []string{"pi\tcli"}}, wantErr: true},
+		{name: "agent name with newline", cfg: AgentConfig{Available: []string{"pi\ncli"}}, wantErr: true},
+		{name: "whitespace-only agent name", cfg: AgentConfig{Available: []string{" \t\n"}}, wantErr: true},
 		{name: "duplicate agent", cfg: AgentConfig{Available: []string{"pi", "pi"}}, wantErr: true},
 		{name: "default missing from available", cfg: AgentConfig{Default: "codex", Available: []string{"pi"}}, wantErr: true},
 	}
@@ -229,6 +233,32 @@ func TestAgentConfigValidate(t *testing.T) {
 				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestConfiguredAgentNamesAreSelectable guards the invariant that every
+// name accepted by AgentConfig.Validate can be selected explicitly through
+// the documented command syntax.
+func TestConfiguredAgentNamesAreSelectable(t *testing.T) {
+	cfg := AgentConfig{Available: []string{"pi", "codex-cli", "http.reviewer", "a=b"}}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() unexpected error: %v", err)
+	}
+	for _, name := range cfg.Available {
+		for _, body := range []string{"/review --agent " + name, "/review --agent=" + name} {
+			inv, err := ParseInvocation(body)
+			if err != nil {
+				t.Fatalf("ParseInvocation(%q) unexpected error: %v", body, err)
+			}
+			got, err := inv.ResolveAgent(cfg)
+			if err != nil {
+				t.Fatalf("ResolveAgent(%q) unexpected error: %v", body, err)
+			}
+			if got != name {
+				t.Fatalf("ResolveAgent(%q) = %q, want %q", body, got, name)
+			}
+		}
 	}
 }
 

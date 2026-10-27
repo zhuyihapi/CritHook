@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // Errors reported when parsing or resolving a comment command. Callers use
@@ -58,8 +59,10 @@ type AgentConfig struct {
 }
 
 // Validate reports whether the configuration can select an executor: at
-// least one non-empty unique agent name, and a Default that is available
-// when set.
+// least one non-empty unique agent name without whitespace, and a Default
+// that is available when set. Whitespace is rejected because the command
+// syntax reads an agent name as a single whitespace-delimited token, so a
+// name containing whitespace could never be selected explicitly.
 func (c AgentConfig) Validate() error {
 	if len(c.Available) == 0 {
 		return fmt.Errorf("%w: no available agents", ErrInvalidConfig)
@@ -68,6 +71,9 @@ func (c AgentConfig) Validate() error {
 	for _, name := range c.Available {
 		if name == "" {
 			return fmt.Errorf("%w: empty agent name", ErrInvalidConfig)
+		}
+		if strings.ContainsFunc(name, unicode.IsSpace) {
+			return fmt.Errorf("%w: agent name %q contains whitespace", ErrInvalidConfig, name)
 		}
 		if seen[name] {
 			return fmt.Errorf("%w: duplicate agent %q", ErrInvalidConfig, name)
