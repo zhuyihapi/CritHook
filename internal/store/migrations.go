@@ -59,8 +59,9 @@ var migrations = []migration{
 
 // migrate applies pending migrations from list in order. It rejects a list
 // that is not gapless starting at 1, and a database whose applied versions
-// are not a prefix-compatible subset of list, so a downgrade or a forked
-// history fails loudly instead of silently diverging.
+// are not a contiguous ordered prefix of list, so a downgrade, a gap, or a
+// forked history fails loudly instead of silently diverging or applying
+// older migrations after later ones.
 func migrate(ctx context.Context, db *sql.DB, list []migration) error {
 	for i, m := range list {
 		if m.version != int64(i+1) {
@@ -74,11 +75,6 @@ func migrate(ctx context.Context, db *sql.DB, list []migration) error {
 		applied_at TEXT NOT NULL
 	)`); err != nil {
 		return fmt.Errorf("store: create schema_migrations: %w", err)
-	}
-
-	known := make(map[int64]migration, len(list))
-	for _, m := range list {
-		known[m.version] = m
 	}
 
 	rows, err := db.QueryContext(ctx, `SELECT version FROM schema_migrations ORDER BY version`)
@@ -97,9 +93,13 @@ func migrate(ctx context.Context, db *sql.DB, list []migration) error {
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("store: read schema_migrations: %w", err)
 	}
-	for _, v := range applied {
-		if _, ok := known[v]; !ok {
-			return fmt.Errorf("store: database has applied migration %d which is not in the migration list", v)
+	// Applied versions are returned in ascending order and must form a
+	// contiguous ordered prefix of the migration list: a history with gaps,
+	// out-of-order versions, or versions beyond the list (a downgrade) is
+	// rejected instead of letting older migrations run after later ones.
+	for i, v := range applied {
+		if i >= len(list) || list[i].version != v {
+			return fmt.Errorf("store: database has applied migration %d which is not a contiguous prefix of the migration list", v)
 		}
 	}
 

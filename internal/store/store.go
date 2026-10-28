@@ -33,6 +33,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"time"
 
@@ -88,15 +89,18 @@ type Store struct {
 }
 
 // Open opens the SQLite database at path, creating it when missing, and
-// applies pending migrations before returning. Commits are fully durable
-// (WAL journal with synchronous=FULL) so an acknowledged task survives a
-// crash. The context bounds connection setup and migration.
+// applies pending migrations before returning. The path must name a
+// persistent database file: empty paths and ":memory:" are rejected, because
+// SQLite would otherwise provide a private temporary or in-memory database
+// whose contents disappear when the connection closes, breaking the durable
+// acceptance boundary. Commits are fully durable (WAL journal with
+// synchronous=FULL) so an acknowledged task survives a crash. The context
+// bounds connection setup and migration.
 func Open(ctx context.Context, path string) (*Store, error) {
-	dsn := "file:" + filepath.ToSlash(path) +
-		"?_pragma=busy_timeout(5000)" +
-		"&_pragma=journal_mode(WAL)" +
-		"&_pragma=synchronous(FULL)" +
-		"&_pragma=foreign_keys(1)"
+	dsn, err := dataSourceName(path)
+	if err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("store: open %s: %w", path, err)
@@ -111,6 +115,27 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{db: db}, nil
+}
+
+// dataSourceName builds the SQLite URI for a persistent database file at
+// path. The filesystem path is resolved to an absolute path and encoded as a
+// URI path, so reserved characters in the filename (for example '#', '?',
+// and '%') cannot alter which file SQLite opens; the pragma query is fixed
+// input assembled here, never derived from the path.
+func dataSourceName(path string) (string, error) {
+	if path == "" || path == ":memory:" {
+		return "", fmt.Errorf("store: non-persistent database path %q", path)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("store: resolve database path %q: %w", path, err)
+	}
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}
+	return u.String() + "?" +
+		"_pragma=busy_timeout(5000)" +
+		"&_pragma=journal_mode(WAL)" +
+		"&_pragma=synchronous(FULL)" +
+		"&_pragma=foreign_keys(1)", nil
 }
 
 // Close releases the database connection.

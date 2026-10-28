@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -495,6 +497,124 @@ func TestMigrateRejectsDowngrade(t *testing.T) {
 	v1 := v2[:1]
 	if err := migrate(ctx, db, v1); err == nil {
 		t.Fatal("migrate with a shorter list succeeded, want downgrade error")
+	}
+}
+
+func TestOpenRejectsNonPersistentPaths(t *testing.T) {
+	for _, path := range []string{"", ":memory:"} {
+		t.Run(fmt.Sprintf("path=%q", path), func(t *testing.T) {
+			store, err := Open(context.Background(), path)
+			if err == nil {
+				store.Close()
+				t.Fatalf("Open(%q) succeeded, want error: a temporary database would acknowledge tasks that disappear on close", path)
+			}
+		})
+	}
+}
+
+func TestOpenRejectsNonPersistentPathBeforeAcceptance(t *testing.T) {
+	// The rejection must happen in Open, before a caller could ever hold a
+	// store and acknowledge a task against it.
+	if store, err := Open(context.Background(), ""); err == nil {
+		store.Close()
+		t.Fatal("Open with empty path succeeded, want rejection before any task can be acknowledged")
+	}
+}
+
+func TestOpenPersistsAtConfiguredPathWithReservedCharacters(t *testing.T) {
+	for _, name := range []string{
+		"tasks#production.sqlite",
+		"tasks?query.sqlite",
+		"tasks%20percent.sqlite",
+		"tasks with space.sqlite",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), name)
+			ctx := context.Background()
+
+			store, err := Open(ctx, path)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			in := githubIssueInput("c1", "d1")
+			accepted, _, err := store.AcceptTask(ctx, in)
+			if err != nil {
+				store.Close()
+				t.Fatalf("AcceptTask: %v", err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+
+			// The database file must exist at exactly the configured path;
+			// a mis-encoded URI would have created a different filename.
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("configured database path: %v", err)
+			}
+
+			reopened, err := Open(ctx, path)
+			if err != nil {
+				t.Fatalf("reopen: %v", err)
+			}
+			defer reopened.Close()
+			loaded, err := reopened.TaskBySource(ctx, in.SourceIdentity())
+			if err != nil {
+				t.Fatalf("TaskBySource after reopen: %v", err)
+			}
+			if loaded.ID != accepted.ID || loaded.Input != accepted.Input {
+				t.Errorf("task after reopen = %+v, want %+v", loaded, accepted)
+			}
+		})
+	}
+}
+
+func TestMigrateRejectsNonPrefixHistory(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "t.sqlite")
+
+	// A database whose recorded history is [2] only.
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE schema_migrations (
+		version INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		applied_at TEXT NOT NULL
+	)`); err != nil {
+		db.Close()
+		t.Fatalf("create schema_migrations: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO schema_migrations (version, name, applied_at) VALUES (2, 'second', 'x')`,
+	); err != nil {
+		db.Close()
+		t.Fatalf("seed history: %v", err)
+	}
+	db.Close()
+
+	list := []migration{
+		{version: 1, name: "first", stmts: []string{`CREATE TABLE t1 (id INTEGER PRIMARY KEY)`}},
+		{version: 2, name: "second", stmts: []string{`CREATE TABLE t2 (id INTEGER PRIMARY KEY)`}},
+	}
+	db, err = sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer db.Close()
+	if err := migrate(ctx, db, list); err == nil {
+		t.Fatal("migrate with history [2] and list [1 2] succeeded, want contiguous-prefix error")
+	}
+
+	// Migration 1 must not have been applied out of order.
+	var name string
+	err = db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 't1'`).Scan(&name)
+	if err == nil {
+		t.Fatal("migration 1 was executed after migration 2, want no out-of-order application")
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("check t1: %v", err)
 	}
 }
 
