@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/zhuyihapi/CritHook/internal/review"
@@ -96,6 +97,7 @@ type Store struct {
 // acceptance boundary. Commits are fully durable (WAL journal with
 // synchronous=FULL) so an acknowledged task survives a crash. The context
 // bounds connection setup and migration.
+// Paths containing NUL bytes are rejected before opening any database file.
 func Open(ctx context.Context, path string) (*Store, error) {
 	dsn, err := dataSourceName(path)
 	if err != nil {
@@ -123,6 +125,9 @@ func Open(ctx context.Context, path string) (*Store, error) {
 // and '%') cannot alter which file SQLite opens; the pragma query is fixed
 // input assembled here, never derived from the path.
 func dataSourceName(path string) (string, error) {
+	if strings.ContainsRune(path, '\x00') {
+		return "", fmt.Errorf("store: database path contains NUL byte")
+	}
 	if path == "" || path == ":memory:" {
 		return "", fmt.Errorf("store: non-persistent database path %q", path)
 	}

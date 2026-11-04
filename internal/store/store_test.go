@@ -521,11 +521,43 @@ func TestOpenRejectsNonPersistentPathBeforeAcceptance(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsNULPathsWithoutCreatingFiles(t *testing.T) {
+	for _, name := range []string{
+		"tasks.sqlite\x00suffix",
+		"tasks.sqlite\x00",
+		"invalid\x00/../tasks.sqlite",
+	} {
+		t.Run(fmt.Sprintf("path=%q", name), func(t *testing.T) {
+			dir := t.TempDir()
+			// Do not use filepath.Join: cleaning could remove the invalid component.
+			path := dir + string(filepath.Separator) + name
+			store, err := Open(context.Background(), path)
+			if store != nil {
+				if closeErr := store.Close(); closeErr != nil {
+					t.Fatalf("Close unexpected store: %v", closeErr)
+				}
+				t.Error("Open returned a store for a NUL-containing path")
+			}
+			if err == nil {
+				t.Error("Open succeeded for a NUL-containing path")
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatalf("ReadDir: %v", err)
+			}
+			if len(entries) != 0 {
+				t.Errorf("Open created files for an invalid path: %v", entries)
+			}
+		})
+	}
+}
+
 func TestOpenPersistsAtConfiguredPathWithReservedCharacters(t *testing.T) {
 	for _, name := range []string{
 		"tasks#production.sqlite",
 		"tasks?query.sqlite",
 		"tasks%20percent.sqlite",
+		"tasks%00literal.sqlite",
 		"tasks with space.sqlite",
 	} {
 		t.Run(name, func(t *testing.T) {

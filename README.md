@@ -22,6 +22,8 @@ The normalized input for an accepted request (`internal/review.TaskInput`) cover
 
 Accepted requests are persisted as tasks in SQLite (`internal/store`). A task is created in the `queued` state and moves through an explicit lifecycle — `queued`, `running`, `succeeded`, `failed` — constrained by the schema; execution transitions are owned by the execution lifecycle built on the store.
 
+The store requires a persistent database file path. Empty paths, `:memory:`, and paths containing NUL bytes are rejected before opening a database.
+
 Durable acceptance boundary: `store.AcceptTask` commits the task and its delivery record in one transaction, and a webhook may be acknowledged as accepted only after it returns without error. Duplicates are already durable from their first delivery and are acknowledged the same way. On error nothing was stored and the webhook must be answered as failed so the platform redelivers.
 
 Deliveries are deduplicated on two stable identities, each scoped to provider and project: the platform delivery identifier, when present, and the triggering comment's `SourceIdentity`. Same names on another platform or project never collide. A redelivery returns the already accepted task; a different comment is a new command and is accepted again. The database uses WAL with `synchronous=FULL`, so acknowledged tasks survive a crash, and schema changes run through ordered migrations that preserve existing records.
